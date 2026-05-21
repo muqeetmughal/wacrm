@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, KeyboardEvent } from "react";
-import { Send, LayoutTemplate } from "lucide-react";
+import { Send, LayoutTemplate, Mic, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ReplyQuote } from "./reply-quote";
@@ -13,10 +13,16 @@ interface ReplyDraft {
   preview: string;
 }
 
+export interface SendMessage {
+  text?: string;
+  audioBlob?: Blob;
+  replyToId?: string;
+}
+
 interface MessageComposerProps {
   conversationId: string;
   sessionExpired: boolean;
-  onSend: (text: string, replyToId?: string) => void;
+  onSend: (msg: SendMessage) => void;
   onOpenTemplates: () => void;
   replyTo?: ReplyDraft | null;
   onClearReply?: () => void;
@@ -32,23 +38,25 @@ export function MessageComposer({
 }: MessageComposerProps) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const adjustHeight = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    // Max 4 lines (~96px)
     el.style.height = `${Math.min(el.scrollHeight, 96)}px`;
   }, []);
 
-  const handleSend = useCallback(async () => {
+  const handleSendText = useCallback(async () => {
     const trimmed = text.trim();
     if (!trimmed || sending || sessionExpired) return;
 
     setSending(true);
     try {
-      onSend(trimmed, replyTo?.id);
+      onSend({ text: trimmed, replyToId: replyTo?.id });
       setText("");
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
@@ -62,10 +70,10 @@ export function MessageComposer({
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        handleSend();
+        handleSendText();
       }
     },
-    [handleSend]
+    [handleSendText]
   );
 
   const handleChange = useCallback(
@@ -75,6 +83,39 @@ export function MessageComposer({
     },
     [adjustHeight]
   );
+
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        if (blob.size > 0) {
+          onSend({ audioBlob: blob, replyToId: replyTo?.id });
+        }
+      };
+
+      mediaRecorder.start();
+      setRecording(true);
+    } catch {
+      console.error('Microphone access denied');
+    }
+  }, [onSend, replyTo?.id]);
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      setRecording(false);
+    }
+  }, []);
 
   return (
     <div className="border-t border-slate-800 bg-slate-900 p-3">
@@ -101,6 +142,13 @@ export function MessageComposer({
             <LayoutTemplate className="mr-1 h-3 w-3" />
             Templates
           </Button>
+        </div>
+      )}
+
+      {recording && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-2">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
+          <span className="text-xs text-red-400">Recording voice message...</span>
         </div>
       )}
 
@@ -135,17 +183,30 @@ export function MessageComposer({
 
         <Button
           size="sm"
+          variant={recording ? "destructive" : "default"}
+          className={cn(
+            "h-9 w-9 shrink-0 p-0",
+            recording
+              ? "bg-red-600 hover:bg-red-500"
+              : "bg-slate-700 hover:bg-slate-600"
+          )}
+          onClick={recording ? stopRecording : startRecording}
+          disabled={sessionExpired || sending}
+          title={recording ? "Stop recording" : "Record voice message"}
+        >
+          {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+        </Button>
+
+        <Button
+          size="sm"
           className="h-9 w-9 shrink-0 bg-violet-600 p-0 hover:bg-violet-500 disabled:opacity-40"
           disabled={!text.trim() || sessionExpired || sending}
-          onClick={handleSend}
+          onClick={handleSendText}
         >
           <Send className="h-4 w-4" />
         </Button>
       </div>
 
-      {/* Hint sits outside the flex row so its height doesn't push
-          `items-end` buttons below the textarea. Indented to line up
-          under the textarea left edge (w-9 button + gap-2 = 44px). */}
       <p className="mt-1 pl-11 text-[10px] text-slate-600">
         Type &apos;/&apos; for quick replies
       </p>

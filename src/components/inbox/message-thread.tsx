@@ -33,7 +33,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MessageBubble } from "./message-bubble";
 import { MessageActions } from "./message-actions";
-import { MessageComposer } from "./message-composer";
+import { MessageComposer, type SendMessage } from "./message-composer";
 import { TemplatePicker } from "./template-picker";
 import { buildReplyPreview } from "./reply-quote";
 import { toast } from "sonner";
@@ -349,57 +349,103 @@ export function MessageThread({
   }, [messages]);
 
   const handleSend = useCallback(
-    async (text: string, replyToId?: string) => {
+    async (msg: SendMessage) => {
       if (!conversation) return;
 
       const tempId = `temp-${Date.now()}`;
-
-      // Optimistic update — shows the message immediately with "sending" status
-      const optimisticMsg: Message = {
-        id: tempId,
-        conversation_id: conversation.id,
-        sender_type: "agent",
-        content_type: "text",
-        content_text: text,
-        status: "sending",
-        created_at: new Date().toISOString(),
-        reply_to_message_id: replyToId,
-      };
-      onNewMessage(optimisticMsg);
       setReplyTo(null);
 
-      try {
-        const res = await fetch("/api/whatsapp/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conversation_id: conversation.id,
-            message_type: "text",
-            content_text: text,
-            reply_to_message_id: replyToId,
-          }),
-        });
+      if (msg.audioBlob) {
+        // --- Audio message ---
+        const optimisticMsg: Message = {
+          id: tempId,
+          conversation_id: conversation.id,
+          sender_type: "agent",
+          content_type: "audio",
+          status: "sending",
+          created_at: new Date().toISOString(),
+          reply_to_message_id: msg.replyToId,
+        };
+        onNewMessage(optimisticMsg);
 
-        const payload = await res.json().catch(() => ({}));
+        try {
+          const reader = new FileReader();
+          const base64 = await new Promise<string>((resolve, reject) => {
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(msg.audioBlob!);
+          });
 
-        if (!res.ok) {
-          const reason = payload?.error || `HTTP ${res.status}`;
-          console.error("Failed to send message:", reason);
+          const res = await fetch("/api/whatsapp/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              conversation_id: conversation.id,
+              message_type: "audio",
+              media_data: base64,
+              reply_to_message_id: msg.replyToId,
+            }),
+          });
+
+          const payload = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            const reason = payload?.error || `HTTP ${res.status}`;
+            console.error("Failed to send audio:", reason);
+            toast.error(`Failed to send: ${reason}`);
+            onUpdateMessage(tempId, { status: "failed" });
+            return;
+          }
+          onUpdateMessage(tempId, { status: "sent" });
+        } catch (err) {
+          console.error("Failed to send audio:", err);
+          const reason = err instanceof Error ? err.message : "network error";
           toast.error(`Failed to send: ${reason}`);
-          // Mark the optimistic bubble as failed so the user sees what happened
           onUpdateMessage(tempId, { status: "failed" });
-          return;
         }
+      } else {
+        // --- Text message ---
+        const text = msg.text?.trim();
+        if (!text) return;
 
-        // Success — the realtime INSERT event will replace the temp bubble
-        // with the real DB row. If realtime hasn't arrived yet, at least
-        // flip status to 'sent' so the UI stops showing "sending".
-        onUpdateMessage(tempId, { status: "sent" });
-      } catch (err) {
-        console.error("Failed to send message:", err);
-        const reason = err instanceof Error ? err.message : "network error";
-        toast.error(`Failed to send: ${reason}`);
-        onUpdateMessage(tempId, { status: "failed" });
+        const optimisticMsg: Message = {
+          id: tempId,
+          conversation_id: conversation.id,
+          sender_type: "agent",
+          content_type: "text",
+          content_text: text,
+          status: "sending",
+          created_at: new Date().toISOString(),
+          reply_to_message_id: msg.replyToId,
+        };
+        onNewMessage(optimisticMsg);
+
+        try {
+          const res = await fetch("/api/whatsapp/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              conversation_id: conversation.id,
+              message_type: "text",
+              content_text: text,
+              reply_to_message_id: msg.replyToId,
+            }),
+          });
+
+          const payload = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            const reason = payload?.error || `HTTP ${res.status}`;
+            console.error("Failed to send message:", reason);
+            toast.error(`Failed to send: ${reason}`);
+            onUpdateMessage(tempId, { status: "failed" });
+            return;
+          }
+          onUpdateMessage(tempId, { status: "sent" });
+        } catch (err) {
+          console.error("Failed to send message:", err);
+          const reason = err instanceof Error ? err.message : "network error";
+          toast.error(`Failed to send: ${reason}`);
+          onUpdateMessage(tempId, { status: "failed" });
+        }
       }
     },
     [conversation, onNewMessage, onUpdateMessage]

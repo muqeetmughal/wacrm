@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { sendTextMessage, sendTemplateMessage } from '@/lib/whatsapp/meta-api'
+import { sendTextMessage, sendTemplateMessage, sendAudioMessage, uploadMedia } from '@/lib/whatsapp/meta-api'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import {
   sanitizePhoneForMeta,
@@ -65,6 +65,13 @@ export async function POST(request: Request) {
     if (message_type === 'template' && !template_name) {
       return NextResponse.json(
         { error: 'template_name is required for template messages' },
+        { status: 400 }
+      )
+    }
+
+    if (message_type === 'audio' && !body.media_data) {
+      return NextResponse.json(
+        { error: 'media_data is required for audio messages' },
         { status: 400 }
       )
     }
@@ -176,7 +183,38 @@ export async function POST(request: Request) {
     let waMessageId = ''
     let workingPhone = sanitizedPhone
 
+    // For audio, upload to Meta first, then send
+    let audioMediaId: string | undefined
+    let audioMimeType = 'audio/ogg'
+
+    if (message_type === 'audio') {
+      const base64Data = body.media_data as string
+      const matches = base64Data.match(/^data:(audio\/\w+);base64,(.+)$/)
+      if (matches) {
+        audioMimeType = matches[1]
+        body.media_data = matches[2]
+      }
+      const audioBuffer = Buffer.from(body.media_data as string, 'base64')
+      const uploadResult = await uploadMedia({
+        phoneNumberId: config.phone_number_id,
+        accessToken,
+        fileBuffer: audioBuffer,
+        mimeType: audioMimeType,
+      })
+      audioMediaId = uploadResult.id
+    }
+
     const attempt = async (phone: string): Promise<string> => {
+      if (message_type === 'audio' && audioMediaId) {
+        const result = await sendAudioMessage({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          to: phone,
+          mediaId: audioMediaId,
+          contextMessageId,
+        })
+        return result.messageId
+      }
       if (message_type === 'template') {
         const result = await sendTemplateMessage({
           phoneNumberId: config.phone_number_id,
@@ -244,6 +282,12 @@ export async function POST(request: Request) {
         .eq('id', contact.id)
     }
 
+    // Build the media_url for stored messages
+    let storedMediaUrl = media_url || null
+    if (message_type === 'audio' && audioMediaId) {
+      storedMediaUrl = `/api/whatsapp/media/${audioMediaId}`
+    }
+
     // Insert message into DB — field names MUST match the messages schema
     // (see supabase/migrations/001_initial_schema.sql):
     //   conversation_id, sender_type, content_type, content_text,
@@ -255,7 +299,7 @@ export async function POST(request: Request) {
         sender_type: 'agent',
         content_type: message_type,
         content_text: content_text || null,
-        media_url: media_url || null,
+        media_url: storedMediaUrl,
         template_name: template_name || null,
         message_id: waMessageId,
         status: 'sent',
@@ -273,10 +317,13 @@ export async function POST(request: Request) {
     }
 
     // Update conversation
+    const lastText = message_type === 'audio'
+      ? '[Voice message]'
+      : content_text || `[${message_type}]`
     await supabase
       .from('conversations')
       .update({
-        last_message_text: content_text || `[${message_type}]`,
+        last_message_text: lastText,
         last_message_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })

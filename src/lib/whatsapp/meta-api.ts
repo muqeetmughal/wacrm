@@ -254,6 +254,92 @@ export async function getMediaUrl(
   return { url: data.url, mimeType: data.mime_type || 'application/octet-stream' }
 }
 
+export interface UploadMediaArgs {
+  phoneNumberId: string
+  accessToken: string
+  fileBuffer: Buffer
+  mimeType: string
+  fileName?: string
+}
+
+/**
+ * Upload a media file (audio/image/video/document) to Meta's servers.
+ * Returns the media ID that can be used in sendAudioMessage (and future
+ * sendImageMessage / sendDocumentMessage) calls.
+ *
+ * Meta docs: https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media#
+ */
+export async function uploadMedia(
+  args: UploadMediaArgs
+): Promise<{ id: string }> {
+  const { phoneNumberId, accessToken, fileBuffer, mimeType, fileName } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/media`
+
+  const form = new FormData()
+  form.append('messaging_product', 'whatsapp')
+  form.append('file', new Blob([new Uint8Array(fileBuffer)], { type: mimeType }), fileName || `audio.${mimeType.split('/')[1] || 'ogg'}`)
+  form.append('type', mimeType)
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Media upload failed: ${response.status}`)
+  }
+  const data = await response.json()
+  if (!data.id) throw new Error('Media upload returned no ID')
+  return { id: data.id }
+}
+
+// ============================================================
+// Audio messages
+// ============================================================
+
+export interface SendAudioMessageArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  /** The media ID returned by uploadMedia (or a previously-uploaded one). */
+  mediaId: string
+  contextMessageId?: string
+}
+
+/**
+ * Send an audio/voice message via WhatsApp Cloud API.
+ * The audio must already be uploaded to Meta via uploadMedia.
+ */
+export async function sendAudioMessage(
+  args: SendAudioMessageArgs
+): Promise<MetaSendResult> {
+  const { phoneNumberId, accessToken, to, mediaId, contextMessageId } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'audio',
+    audio: { id: mediaId },
+  }
+  if (contextMessageId) {
+    body.context = { message_id: contextMessageId }
+  }
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = await response.json()
+  return { messageId: data.messages[0].id }
+}
+
 export interface DownloadMediaArgs {
   downloadUrl: string
   accessToken: string
