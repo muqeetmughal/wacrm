@@ -67,6 +67,10 @@ export function buildReplyPreview(message: Message): string {
       return "[Location]";
     case "template":
       return "[Template]";
+    case "button_reply":
+      return "[Button]";
+    case "interactive_reply":
+      return "[List selection]";
     default:
       return "[Message]";
   }

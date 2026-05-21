@@ -216,6 +216,36 @@ function MessageContent({ message }: { message: Message }) {
         </p>
       );
 
+    case "button_reply":
+      return (
+        <div>
+          <span className="mb-1 inline-flex items-center gap-1 rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-400">
+            <LayoutTemplate className="h-3 w-3" />
+            Button reply
+          </span>
+          {message.content_text && (
+            <p className="whitespace-pre-wrap break-words text-sm">
+              {message.content_text}
+            </p>
+          )}
+        </div>
+      );
+
+    case "interactive_reply":
+      return (
+        <div>
+          <span className="mb-1 inline-flex items-center gap-1 rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
+            <LayoutTemplate className="h-3 w-3" />
+            List selection
+          </span>
+          {message.content_text && (
+            <p className="whitespace-pre-wrap break-words text-sm">
+              {message.content_text}
+            </p>
+          )}
+        </div>
+      );
+
     case "image":
       return (
         <div>

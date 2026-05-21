@@ -508,19 +508,18 @@ async function processMessage(
   //   text, image, document, audio, video, location, template
   // Map incoming WhatsApp types that aren't in that list to the closest
   // allowed value so the INSERT doesn't fail with a constraint error.
-  // Incoming button / interactive replies carry text-like content but aren't
-  // in the DB CHECK constraint. Map them to 'text' so the INSERT succeeds.
-  const MAP_TO_TEXT = new Set(['button', 'interactive', 'reaction'])
+  const MESSAGE_TYPE_MAP: Record<string, string> = {
+    button: 'button_reply',
+    interactive: 'interactive_reply',
+    sticker: 'image',
+  }
   const ALLOWED_CONTENT_TYPES = new Set([
-    'text', 'image', 'document', 'audio', 'video', 'location', 'template',
+    'text', 'image', 'document', 'audio', 'video', 'location',
+    'template', 'button_reply', 'interactive_reply',
   ])
   const contentType = ALLOWED_CONTENT_TYPES.has(message.type)
     ? message.type
-    : message.type === 'sticker'
-      ? 'image'
-      : MAP_TO_TEXT.has(message.type)
-        ? 'text'
-        : 'text'
+    : MESSAGE_TYPE_MAP[message.type] || 'text'
 
   // Determine whether this is the contact's very first inbound message
   // BEFORE we insert, so the count is accurate. Covers the case where
@@ -715,7 +714,7 @@ async function parseMessageContent(
 
     case 'button':
       return {
-        contentText: `🟢 ${message.button?.text || 'Button reply'}`,
+        contentText: message.button?.text || 'Button reply',
         mediaUrl: null,
         mediaType: null,
       }
@@ -723,20 +722,20 @@ async function parseMessageContent(
     case 'interactive':
       if (message.interactive?.button_reply) {
         return {
-          contentText: `🟢 ${message.interactive.button_reply.title}`,
+          contentText: message.interactive.button_reply.title,
           mediaUrl: null,
           mediaType: null,
         }
       }
       if (message.interactive?.list_reply) {
         return {
-          contentText: `📋 ${message.interactive.list_reply.title}`,
+          contentText: message.interactive.list_reply.title,
           mediaUrl: null,
           mediaType: null,
         }
       }
       return {
-        contentText: '[Interactive reply]',
+        contentText: 'Interactive reply',
         mediaUrl: null,
         mediaType: null,
       }
