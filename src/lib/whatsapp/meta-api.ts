@@ -11,6 +11,8 @@
 
 const META_API_VERSION = 'v21.0'
 const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`
+// Groups API requires v23.0+
+const META_GROUPS_API_BASE = `https://graph.facebook.com/v23.0`
 
 export interface MetaSendResult {
   messageId: string
@@ -74,6 +76,8 @@ export interface SendTextMessageArgs {
   accessToken: string
   to: string
   text: string
+  /** 'individual' (default) or 'group' */
+  recipientType?: 'individual' | 'group'
   /** Meta's message_id of the message being replied to. Adds a `context` field
    *  so WhatsApp renders the new message as a reply with a quote preview. */
   contextMessageId?: string
@@ -86,11 +90,11 @@ export interface SendTextMessageArgs {
 export async function sendTextMessage(
   args: SendTextMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, text, contextMessageId } = args
+  const { phoneNumberId, accessToken, to, text, recipientType, contextMessageId } = args
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: recipientType ?? 'individual',
     to,
     type: 'text',
     text: { body: text },
@@ -120,6 +124,8 @@ export interface SendTemplateMessageArgs {
   templateName: string
   language?: string
   params?: string[]
+  /** 'individual' (default) or 'group' */
+  recipientType?: 'individual' | 'group'
   /** Meta's message_id of the message being replied to. */
   contextMessageId?: string
 }
@@ -138,6 +144,7 @@ export async function sendTemplateMessage(
     templateName,
     language = 'en_US',
     params,
+    recipientType,
     contextMessageId,
   } = args
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
@@ -158,7 +165,7 @@ export async function sendTemplateMessage(
 
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: recipientType ?? 'individual',
     to,
     type: 'template',
     template,
@@ -190,6 +197,8 @@ export interface SendReactionMessageArgs {
   phoneNumberId: string
   accessToken: string
   to: string
+  /** 'individual' (default) or 'group' */
+  recipientType?: 'individual' | 'group'
   /** Meta's message_id of the message being reacted to. */
   targetMessageId: string
   /** Single emoji, or empty string to remove an existing reaction. */
@@ -203,7 +212,7 @@ export interface SendReactionMessageArgs {
 export async function sendReactionMessage(
   args: SendReactionMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, targetMessageId, emoji } = args
+  const { phoneNumberId, accessToken, to, recipientType, targetMessageId, emoji } = args
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const response = await fetch(url, {
     method: 'POST',
@@ -213,7 +222,7 @@ export async function sendReactionMessage(
     },
     body: JSON.stringify({
       messaging_product: 'whatsapp',
-      recipient_type: 'individual',
+      recipient_type: recipientType ?? 'individual',
       to,
       type: 'reaction',
       reaction: { message_id: targetMessageId, emoji },
@@ -303,6 +312,8 @@ export interface SendAudioMessageArgs {
   to: string
   /** The media ID returned by uploadMedia (or a previously-uploaded one). */
   mediaId: string
+  /** 'individual' (default) or 'group' */
+  recipientType?: 'individual' | 'group'
   contextMessageId?: string
 }
 
@@ -313,11 +324,11 @@ export interface SendAudioMessageArgs {
 export async function sendAudioMessage(
   args: SendAudioMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, mediaId, contextMessageId } = args
+  const { phoneNumberId, accessToken, to, mediaId, recipientType, contextMessageId } = args
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: recipientType ?? 'individual',
     to,
     type: 'audio',
     audio: { id: mediaId },
@@ -350,17 +361,19 @@ export interface SendImageMessageArgs {
   to: string
   mediaId: string
   caption?: string
+  /** 'individual' (default) or 'group' */
+  recipientType?: 'individual' | 'group'
   contextMessageId?: string
 }
 
 export async function sendImageMessage(
   args: SendImageMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, mediaId, caption, contextMessageId } = args
+  const { phoneNumberId, accessToken, to, mediaId, caption, recipientType, contextMessageId } = args
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: recipientType ?? 'individual',
     to,
     type: 'image',
     image: { id: mediaId, caption },
@@ -395,17 +408,19 @@ export interface SendDocumentMessageArgs {
   mediaId: string
   caption?: string
   filename?: string
+  /** 'individual' (default) or 'group' */
+  recipientType?: 'individual' | 'group'
   contextMessageId?: string
 }
 
 export async function sendDocumentMessage(
   args: SendDocumentMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, mediaId, caption, filename, contextMessageId } = args
+  const { phoneNumberId, accessToken, to, mediaId, caption, filename, recipientType, contextMessageId } = args
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: recipientType ?? 'individual',
     to,
     type: 'document',
     document: { id: mediaId, caption, filename },
@@ -453,4 +468,134 @@ export async function downloadMedia(
     response.headers.get('content-type') || 'application/octet-stream'
   const buffer = Buffer.from(await response.arrayBuffer())
   return { buffer, contentType }
+}
+
+// ============================================================
+// Group management
+// ============================================================
+
+export interface CreateGroupArgs {
+  phoneNumberId: string
+  accessToken: string
+  subject: string
+  description?: string
+}
+
+export interface CreateGroupResult {
+  groupId: string
+  inviteLink: string
+}
+
+/**
+ * Create a WhatsApp group via the Cloud API.
+ * Returns the group_id and invite_link.
+ */
+export async function createGroup(
+  args: CreateGroupArgs
+): Promise<CreateGroupResult> {
+  const { phoneNumberId, accessToken, subject, description } = args
+  const url = `${META_GROUPS_API_BASE}/${phoneNumberId}/groups`
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    subject,
+  }
+  if (description) body.description = description
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Group creation failed: ${response.status}`)
+  }
+  const data = await response.json()
+  return { groupId: data.id, inviteLink: data.invite_link }
+}
+
+export interface GetGroupsArgs {
+  phoneNumberId: string
+  accessToken: string
+}
+
+export type GroupInfo = {
+  id: string
+  subject: string
+  description?: string
+  invite_link?: string
+  participant_count?: number
+  created_at?: string
+}
+
+/**
+ * List all WhatsApp groups for a phone number.
+ */
+export async function getGroups(args: GetGroupsArgs): Promise<GroupInfo[]> {
+  const { phoneNumberId, accessToken } = args
+  const url = `${META_GROUPS_API_BASE}/${phoneNumberId}/groups?fields=id,subject,description,invite_link,participant_count,created_at`
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Fetch groups failed: ${response.status}`)
+  }
+  const data = await response.json()
+  return data.data ?? []
+}
+
+export interface RemoveGroupMemberArgs {
+  phoneNumberId: string
+  accessToken: string
+  groupId: string
+  /** The phone number in E.164 format (e.g. 15551234567). */
+  phone: string
+}
+
+/**
+ * Remove a member from a WhatsApp group.
+ * Only the group creator can remove members.
+ */
+export async function removeGroupMember(
+  args: RemoveGroupMemberArgs
+): Promise<void> {
+  const { phoneNumberId, accessToken, groupId, phone } = args
+  const url = `${META_GROUPS_API_BASE}/${phoneNumberId}/groups/${groupId}/members`
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      phone_number: phone,
+    }),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Remove member failed: ${response.status}`)
+  }
+}
+
+export interface DeleteGroupArgs {
+  phoneNumberId: string
+  accessToken: string
+  groupId: string
+}
+
+/**
+ * Delete a WhatsApp group. Only the group creator can delete.
+ */
+export async function deleteGroup(args: DeleteGroupArgs): Promise<void> {
+  const { phoneNumberId, accessToken, groupId } = args
+  const url = `${META_GROUPS_API_BASE}/${phoneNumberId}/groups/${groupId}`
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Delete group failed: ${response.status}`)
+  }
 }
