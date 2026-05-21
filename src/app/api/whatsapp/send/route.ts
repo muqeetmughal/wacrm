@@ -84,7 +84,7 @@ export async function POST(request: Request) {
       )
     }
 
-    // Fetch conversation and contact
+    // Fetch conversation and contact (contact is optional — groups have no contact)
     const { data: conversation, error: convError } = await supabase
       .from('conversations')
       .select('*, contact:contacts(*)')
@@ -99,17 +99,26 @@ export async function POST(request: Request) {
       )
     }
 
+    const isGroup = !!conversation.group_id
     const contact = conversation.contact
-    if (!contact?.phone) {
+
+    if (!isGroup && !contact?.phone) {
       return NextResponse.json(
         { error: 'Contact phone number not found' },
         { status: 400 }
       )
     }
 
-    // Sanitize and validate phone
-    const sanitizedPhone = sanitizePhoneForMeta(contact.phone)
-    if (!isValidE164(sanitizedPhone)) {
+    // For groups the "to" is the group_id; for 1:1 it's the contact's phone
+    const recipientId = isGroup ? conversation.group_id : ''
+    const recipientType = isGroup ? 'group' as const : 'individual' as const
+
+    // Sanitize and validate phone for 1:1 messages only
+    const sanitizedPhone = !isGroup && contact?.phone
+      ? sanitizePhoneForMeta(contact.phone)
+      : ''
+
+    if (!isGroup && !isValidE164(sanitizedPhone)) {
       return NextResponse.json(
         { error: 'Invalid phone number format' },
         { status: 400 }
@@ -183,13 +192,10 @@ export async function POST(request: Request) {
       }
     }
 
-    // Send via Meta API — retry with phone-number variants if Meta rejects
-    // with "recipient not in allowed list" (common in sandbox / when a
-    // number was registered with/without a trunk 0). If an alternate
-    // format succeeds, we persist it back to the contact row so the
-    // next send goes through on the first attempt.
+    // For groups the send target is the group_id; for 1:1 it's the phone number.
+    // Groups skip the phone-variant retry and auto-correct logic.
     let waMessageId = ''
-    let workingPhone = sanitizedPhone
+    let workingPhone = isGroup ? '' : sanitizedPhone
 
     // Upload media to Meta first for image/document/audio
     let uploadedMediaId: string | undefined
@@ -222,12 +228,13 @@ export async function POST(request: Request) {
       uploadedMediaId = uploadResult.id
     }
 
-    const attempt = async (phone: string): Promise<string> => {
+    const attempt = async (to: string): Promise<string> => {
       if (message_type === 'image' && uploadedMediaId) {
         const result = await sendImageMessage({
           phoneNumberId: config.phone_number_id,
           accessToken,
-          to: phone,
+          to,
+          recipientType,
           mediaId: uploadedMediaId,
           caption: content_text || undefined,
           contextMessageId,
@@ -238,7 +245,8 @@ export async function POST(request: Request) {
         const result = await sendDocumentMessage({
           phoneNumberId: config.phone_number_id,
           accessToken,
-          to: phone,
+          to,
+          recipientType,
           mediaId: uploadedMediaId,
           caption: content_text || undefined,
           filename: file_name,
@@ -250,7 +258,8 @@ export async function POST(request: Request) {
         const result = await sendAudioMessage({
           phoneNumberId: config.phone_number_id,
           accessToken,
-          to: phone,
+          to,
+          recipientType,
           mediaId: uploadedMediaId,
           contextMessageId,
         })
@@ -260,7 +269,8 @@ export async function POST(request: Request) {
         const result = await sendTemplateMessage({
           phoneNumberId: config.phone_number_id,
           accessToken,
-          to: phone,
+          to,
+          recipientType,
           templateName: template_name,
           params: template_params || [],
           contextMessageId,
@@ -270,7 +280,8 @@ export async function POST(request: Request) {
       const result = await sendTextMessage({
         phoneNumberId: config.phone_number_id,
         accessToken,
-        to: phone,
+        to,
+        recipientType,
         text: content_text,
         contextMessageId,
       })
@@ -278,29 +289,33 @@ export async function POST(request: Request) {
     }
 
     try {
-      const variants = phoneVariants(sanitizedPhone)
-      let lastError: unknown = null
+      if (isGroup) {
+        waMessageId = await attempt(recipientId)
+      } else {
+        const variants = phoneVariants(sanitizedPhone)
+        let lastError: unknown = null
 
-      for (const variant of variants) {
-        try {
-          waMessageId = await attempt(variant)
-          workingPhone = variant
-          lastError = null
-          break
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          // Only retry when the failure is specifically that the
-          // recipient isn't in Meta's allowed list. Any other error
-          // (bad token, invalid template, etc.) bubbles up immediately.
-          if (!isRecipientNotAllowedError(message)) {
-            throw err
+        for (const variant of variants) {
+          try {
+            waMessageId = await attempt(variant)
+            workingPhone = variant
+            lastError = null
+            break
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            // Only retry when the failure is specifically that the
+            // recipient isn't in Meta's allowed list. Any other error
+            // (bad token, invalid template, etc.) bubbles up immediately.
+            if (!isRecipientNotAllowedError(message)) {
+              throw err
+            }
+            lastError = err
+            console.warn(`[whatsapp/send] variant "${variant}" rejected by Meta, trying next…`)
           }
-          lastError = err
-          console.warn(`[whatsapp/send] variant "${variant}" rejected by Meta, trying next…`)
         }
-      }
 
-      if (lastError) throw lastError
+        if (lastError) throw lastError
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown Meta API error'
       console.error('Meta API send failed for all variants:', message)
@@ -313,7 +328,8 @@ export async function POST(request: Request) {
     // If a non-original variant succeeded, update the contact so future
     // sends go straight through. sanitizePhoneForMeta on workingPhone
     // will yield workingPhone itself, so re-storing preserves it.
-    if (workingPhone !== sanitizedPhone) {
+    // Only applies to 1:1 conversations.
+    if (!isGroup && workingPhone !== sanitizedPhone) {
       console.log(
         `[whatsapp/send] Auto-corrected contact phone: ${sanitizedPhone} → ${workingPhone}`
       )

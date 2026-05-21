@@ -71,10 +71,10 @@ export async function POST(request: Request) {
 
     const { data: conversation, error: convError } = await supabase
       .from('conversations')
-      .select('id, user_id, contact:contacts(phone)')
+      .select('id, user_id, group_id, contact:contacts(phone)')
       .eq('id', targetMessage.conversation_id)
       .eq('user_id', user.id)
-      .maybeSingle();
+      .maybeSingle()
 
     if (convError || !conversation) {
       return NextResponse.json(
@@ -83,22 +83,27 @@ export async function POST(request: Request) {
       );
     }
 
+    const isGroup = !!conversation.group_id
     const contact = Array.isArray(conversation.contact)
       ? conversation.contact[0]
-      : conversation.contact;
-    if (!contact?.phone) {
+      : conversation.contact
+
+    if (!isGroup && !contact?.phone) {
       return NextResponse.json(
         { error: 'Contact phone number not found' },
         { status: 400 },
       );
     }
 
+    const recipientId = isGroup ? conversation.group_id : ''
+    const recipientType = isGroup ? 'group' as const : 'individual' as const
+
     // WhatsApp config + access token
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
       .select('phone_number_id, access_token')
       .eq('user_id', user.id)
-      .single();
+      .single()
 
     if (configError || !config) {
       return NextResponse.json(
@@ -108,13 +113,14 @@ export async function POST(request: Request) {
     }
 
     const accessToken = decrypt(config.access_token);
-    const sanitizedPhone = sanitizePhoneForMeta(contact.phone);
+    const to = isGroup ? conversation.group_id : sanitizePhoneForMeta(contact!.phone)
 
     try {
       await sendReactionMessage({
         phoneNumberId: config.phone_number_id,
         accessToken,
-        to: sanitizedPhone,
+        to,
+        recipientType,
         targetMessageId: targetMessage.message_id,
         emoji,
       });
