@@ -63,7 +63,9 @@ export type ConversationStatus = 'open' | 'pending' | 'closed';
 export interface Conversation {
   id: string;
   user_id: string;
-  contact_id: string;
+  contact_id?: string | null;
+  group_id?: string | null;
+  group_subject?: string | null;
   status: ConversationStatus;
   assigned_agent_id?: string;
   last_message_text?: string;
@@ -83,6 +85,7 @@ export interface Message {
   conversation_id: string;
   sender_type: SenderType;
   sender_id?: string;
+  sender_name?: string;
   content_type: ContentType;
   content_text?: string;
   media_url?: string;
@@ -103,6 +106,29 @@ export interface MessageReaction {
   actor_id?: string;
   emoji: string;
   created_at: string;
+}
+
+export interface WabaGroup {
+  id: string;
+  user_id: string;
+  waba_group_id: string;
+  subject: string;
+  description?: string;
+  invite_link?: string;
+  created_at: string;
+  updated_at: string;
+  members?: GroupMember[];
+}
+
+export interface GroupMember {
+  id: string;
+  waba_group_id: string;
+  user_id: string;
+  contact_id?: string;
+  phone: string;
+  name?: string;
+  added_at: string;
+  contact?: Contact;
 }
 
 export interface WhatsAppConfig {
