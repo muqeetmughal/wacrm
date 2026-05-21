@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { sendTextMessage, sendTemplateMessage, sendAudioMessage, uploadMedia } from '@/lib/whatsapp/meta-api'
+import { sendTextMessage, sendTemplateMessage, sendAudioMessage, sendImageMessage, sendDocumentMessage, uploadMedia } from '@/lib/whatsapp/meta-api'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import {
   sanitizePhoneForMeta,
@@ -46,6 +46,7 @@ export async function POST(request: Request) {
       template_name,
       template_params,
       reply_to_message_id,
+      file_name,
     } = body
 
     if (!conversation_id || !message_type) {
@@ -69,9 +70,16 @@ export async function POST(request: Request) {
       )
     }
 
-    if (message_type === 'audio' && !body.media_data) {
+    if ((message_type === 'audio' || message_type === 'image' || message_type === 'document') && !body.media_data) {
       return NextResponse.json(
-        { error: 'media_data is required for audio messages' },
+        { error: 'media_data is required for image/document/audio messages' },
+        { status: 400 }
+      )
+    }
+
+    if (message_type === 'document' && !body.file_name) {
+      return NextResponse.json(
+        { error: 'file_name is required for document messages' },
         { status: 400 }
       )
     }
@@ -183,34 +191,67 @@ export async function POST(request: Request) {
     let waMessageId = ''
     let workingPhone = sanitizedPhone
 
-    // For audio, upload to Meta first, then send
-    let audioMediaId: string | undefined
-    let audioMimeType = 'audio/ogg'
+    // Upload media to Meta first for image/document/audio
+    let uploadedMediaId: string | undefined
 
-    if (message_type === 'audio') {
+    if (message_type === 'image' || message_type === 'document' || message_type === 'audio') {
       const base64Data = body.media_data as string
-      const matches = base64Data.match(/^data:(audio\/\w+);base64,(.+)$/)
+      const mediaPattern = message_type === 'audio' ? 'audio' : message_type === 'image' ? 'image' : '\\w+'
+      const regex = new RegExp(`^data:(${mediaPattern}\\/\\w+);base64,(.+)$`)
+      const matches = base64Data.match(regex)
+      let mimeType = 'audio/ogg'
+      let rawBase64 = base64Data
+
       if (matches) {
-        audioMimeType = matches[1]
-        body.media_data = matches[2]
+        mimeType = matches[1]
+        rawBase64 = matches[2]
+      } else if (base64Data.includes(';base64,')) {
+        const parts = base64Data.split(';base64,')
+        mimeType = parts[0].replace('data:', '')
+        rawBase64 = parts[1]
       }
-      const audioBuffer = Buffer.from(body.media_data as string, 'base64')
+
+      const fileBuffer = Buffer.from(rawBase64, 'base64')
       const uploadResult = await uploadMedia({
         phoneNumberId: config.phone_number_id,
         accessToken,
-        fileBuffer: audioBuffer,
-        mimeType: audioMimeType,
+        fileBuffer,
+        mimeType,
+        fileName: file_name || `file.${mimeType.split('/')[1] || 'bin'}`,
       })
-      audioMediaId = uploadResult.id
+      uploadedMediaId = uploadResult.id
     }
 
     const attempt = async (phone: string): Promise<string> => {
-      if (message_type === 'audio' && audioMediaId) {
+      if (message_type === 'image' && uploadedMediaId) {
+        const result = await sendImageMessage({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          to: phone,
+          mediaId: uploadedMediaId,
+          caption: content_text || undefined,
+          contextMessageId,
+        })
+        return result.messageId
+      }
+      if (message_type === 'document' && uploadedMediaId) {
+        const result = await sendDocumentMessage({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          to: phone,
+          mediaId: uploadedMediaId,
+          caption: content_text || undefined,
+          filename: file_name,
+          contextMessageId,
+        })
+        return result.messageId
+      }
+      if (message_type === 'audio' && uploadedMediaId) {
         const result = await sendAudioMessage({
           phoneNumberId: config.phone_number_id,
           accessToken,
           to: phone,
-          mediaId: audioMediaId,
+          mediaId: uploadedMediaId,
           contextMessageId,
         })
         return result.messageId
@@ -284,8 +325,8 @@ export async function POST(request: Request) {
 
     // Build the media_url for stored messages
     let storedMediaUrl = media_url || null
-    if (message_type === 'audio' && audioMediaId) {
-      storedMediaUrl = `/api/whatsapp/media/${audioMediaId}`
+    if (uploadedMediaId && (message_type === 'image' || message_type === 'document' || message_type === 'audio')) {
+      storedMediaUrl = `/api/whatsapp/media/${uploadedMediaId}`
     }
 
     // Insert message into DB — field names MUST match the messages schema
@@ -317,9 +358,12 @@ export async function POST(request: Request) {
     }
 
     // Update conversation
-    const lastText = message_type === 'audio'
-      ? '[Voice message]'
-      : content_text || `[${message_type}]`
+    const typeLabels: Record<string, string> = {
+      audio: '[Voice message]',
+      image: '[Image]',
+      document: '[Document]',
+    }
+    const lastText = typeLabels[message_type] || content_text || `[${message_type}]`
     await supabase
       .from('conversations')
       .update({

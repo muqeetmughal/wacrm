@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, KeyboardEvent } from "react";
-import { Send, LayoutTemplate, Mic, Square, Upload } from "lucide-react";
+import { Send, LayoutTemplate, Mic, Square, Upload, Image, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -17,6 +17,9 @@ interface ReplyDraft {
 export interface SendMessage {
   text?: string;
   audioBlob?: Blob;
+  imageBlob?: Blob;
+  documentBlob?: Blob;
+  fileName?: string;
   replyToId?: string;
 }
 
@@ -43,7 +46,9 @@ export function MessageComposer({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const documentInputRef = useRef<HTMLInputElement>(null);
 
   const adjustHeight = useCallback(() => {
     const el = textareaRef.current;
@@ -131,16 +136,38 @@ export function MessageComposer({
     }
   }, [onSend, replyTo?.id]);
 
-  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > 16 * 1024 * 1024) {
-      toast.error('Audio file too large (max 16MB)');
+  const MAX_FILE_SIZE = 16 * 1024 * 1024;
+
+  const sendFile = useCallback((file: File, kind: 'imageBlob' | 'documentBlob' | 'audioBlob') => {
+    if (file.size > MAX_FILE_SIZE) {
+      toast.error('File too large (max 16MB)');
       return;
     }
-    onSend({ audioBlob: file, replyToId: replyTo?.id });
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    const msg: SendMessage = { [kind]: file, replyToId: replyTo?.id };
+    if (kind === 'documentBlob') msg.fileName = file.name;
+    onSend(msg);
   }, [onSend, replyTo?.id]);
+
+  const handleImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    sendFile(file, 'imageBlob');
+    if (imageInputRef.current) imageInputRef.current.value = '';
+  }, [sendFile]);
+
+  const handleDocumentUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    sendFile(file, 'documentBlob');
+    if (documentInputRef.current) documentInputRef.current.value = '';
+  }, [sendFile]);
+
+  const handleAudioUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    sendFile(file, 'audioBlob');
+    if (audioInputRef.current) audioInputRef.current.value = '';
+  }, [sendFile]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -185,11 +212,25 @@ export function MessageComposer({
       )}
 
       <input
-        ref={fileInputRef}
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleImageUpload}
+      />
+      <input
+        ref={documentInputRef}
+        type="file"
+        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv"
+        className="hidden"
+        onChange={handleDocumentUpload}
+      />
+      <input
+        ref={audioInputRef}
         type="file"
         accept="audio/*"
         className="hidden"
-        onChange={handleFileUpload}
+        onChange={handleAudioUpload}
       />
 
       <div className="flex items-end gap-2">
@@ -207,7 +248,29 @@ export function MessageComposer({
           variant="ghost"
           size="sm"
           className="h-9 w-9 shrink-0 p-0 text-slate-400 hover:text-white"
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => imageInputRef.current?.click()}
+          disabled={sessionExpired || sending}
+          title="Send image"
+        >
+          <Image className="h-4 w-4" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-9 w-9 shrink-0 p-0 text-slate-400 hover:text-white"
+          onClick={() => documentInputRef.current?.click()}
+          disabled={sessionExpired || sending}
+          title="Send document"
+        >
+          <FileText className="h-4 w-4" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-9 w-9 shrink-0 p-0 text-slate-400 hover:text-white"
+          onClick={() => audioInputRef.current?.click()}
           disabled={sessionExpired || sending}
           title="Upload audio file"
         >

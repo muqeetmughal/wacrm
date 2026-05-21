@@ -10,6 +10,7 @@ import type {
   MessageReaction,
   Contact,
   ConversationStatus,
+  ContentType,
   MessageTemplate,
   Profile,
 } from "@/types";
@@ -348,6 +349,59 @@ export function MessageThread({
     }
   }, [messages]);
 
+  const sendMedia = useCallback(
+    async (
+      blob: Blob,
+      contentType: ContentType,
+      extraBody: Record<string, unknown>,
+      tempId: string,
+    ) => {
+      const optimisticMsg: Message = {
+        id: tempId,
+        conversation_id: conversation!.id,
+        sender_type: "agent",
+        content_type: contentType,
+        status: "sending",
+        created_at: new Date().toISOString(),
+        reply_to_message_id: extraBody.reply_to_message_id as string | undefined,
+      };
+      onNewMessage(optimisticMsg);
+
+      try {
+        const reader = new FileReader();
+        const base64 = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+
+        const res = await fetch("/api/whatsapp/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversation_id: conversation!.id,
+            media_data: base64,
+            ...extraBody,
+          }),
+        });
+
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const reason = payload?.error || `HTTP ${res.status}`;
+          toast.error(`Failed to send: ${reason}`);
+          onUpdateMessage(tempId, { status: "failed" });
+          return;
+        }
+        onUpdateMessage(tempId, { status: "sent" });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : "network error";
+        toast.error(`Failed to send: ${reason}`);
+        onUpdateMessage(tempId, { status: "failed" });
+      }
+    },
+    [conversation, onNewMessage, onUpdateMessage],
+  );
+
   const handleSend = useCallback(
     async (msg: SendMessage) => {
       if (!conversation) return;
@@ -355,100 +409,73 @@ export function MessageThread({
       const tempId = `temp-${Date.now()}`;
       setReplyTo(null);
 
+      if (msg.imageBlob) {
+        return sendMedia(msg.imageBlob, "image", {
+          message_type: "image",
+          content_text: msg.text || null,
+          reply_to_message_id: msg.replyToId,
+        }, tempId);
+      }
+
+      if (msg.documentBlob) {
+        return sendMedia(msg.documentBlob, "document", {
+          message_type: "document",
+          content_text: msg.text || null,
+          file_name: msg.fileName,
+          reply_to_message_id: msg.replyToId,
+        }, tempId);
+      }
+
       if (msg.audioBlob) {
-        // --- Audio message ---
-        const optimisticMsg: Message = {
-          id: tempId,
-          conversation_id: conversation.id,
-          sender_type: "agent",
-          content_type: "audio",
-          status: "sending",
-          created_at: new Date().toISOString(),
+        return sendMedia(msg.audioBlob, "audio", {
+          message_type: "audio",
           reply_to_message_id: msg.replyToId,
-        };
-        onNewMessage(optimisticMsg);
+        }, tempId);
+      }
 
-        try {
-          const reader = new FileReader();
-          const base64 = await new Promise<string>((resolve, reject) => {
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = reject;
-            reader.readAsDataURL(msg.audioBlob!);
-          });
+      // --- Text message ---
+      const text = msg.text?.trim();
+      if (!text) return;
 
-          const res = await fetch("/api/whatsapp/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              conversation_id: conversation.id,
-              message_type: "audio",
-              media_data: base64,
-              reply_to_message_id: msg.replyToId,
-            }),
-          });
+      const optimisticMsg: Message = {
+        id: tempId,
+        conversation_id: conversation.id,
+        sender_type: "agent",
+        content_type: "text",
+        content_text: text,
+        status: "sending",
+        created_at: new Date().toISOString(),
+        reply_to_message_id: msg.replyToId,
+      };
+      onNewMessage(optimisticMsg);
 
-          const payload = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            const reason = payload?.error || `HTTP ${res.status}`;
-            console.error("Failed to send audio:", reason);
-            toast.error(`Failed to send: ${reason}`);
-            onUpdateMessage(tempId, { status: "failed" });
-            return;
-          }
-          onUpdateMessage(tempId, { status: "sent" });
-        } catch (err) {
-          console.error("Failed to send audio:", err);
-          const reason = err instanceof Error ? err.message : "network error";
+      try {
+        const res = await fetch("/api/whatsapp/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversation_id: conversation.id,
+            message_type: "text",
+            content_text: text,
+            reply_to_message_id: msg.replyToId,
+          }),
+        });
+
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const reason = payload?.error || `HTTP ${res.status}`;
           toast.error(`Failed to send: ${reason}`);
           onUpdateMessage(tempId, { status: "failed" });
+          return;
         }
-      } else {
-        // --- Text message ---
-        const text = msg.text?.trim();
-        if (!text) return;
-
-        const optimisticMsg: Message = {
-          id: tempId,
-          conversation_id: conversation.id,
-          sender_type: "agent",
-          content_type: "text",
-          content_text: text,
-          status: "sending",
-          created_at: new Date().toISOString(),
-          reply_to_message_id: msg.replyToId,
-        };
-        onNewMessage(optimisticMsg);
-
-        try {
-          const res = await fetch("/api/whatsapp/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              conversation_id: conversation.id,
-              message_type: "text",
-              content_text: text,
-              reply_to_message_id: msg.replyToId,
-            }),
-          });
-
-          const payload = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            const reason = payload?.error || `HTTP ${res.status}`;
-            console.error("Failed to send message:", reason);
-            toast.error(`Failed to send: ${reason}`);
-            onUpdateMessage(tempId, { status: "failed" });
-            return;
-          }
-          onUpdateMessage(tempId, { status: "sent" });
-        } catch (err) {
-          console.error("Failed to send message:", err);
-          const reason = err instanceof Error ? err.message : "network error";
-          toast.error(`Failed to send: ${reason}`);
-          onUpdateMessage(tempId, { status: "failed" });
-        }
+        onUpdateMessage(tempId, { status: "sent" });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : "network error";
+        toast.error(`Failed to send: ${reason}`);
+        onUpdateMessage(tempId, { status: "failed" });
       }
     },
-    [conversation, onNewMessage, onUpdateMessage]
+    [conversation, onNewMessage, onUpdateMessage, sendMedia]
   );
 
   const handleStatusChange = useCallback(

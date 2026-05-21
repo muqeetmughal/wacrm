@@ -340,6 +340,96 @@ export async function sendAudioMessage(
   return { messageId: data.messages[0].id }
 }
 
+// ============================================================
+// Image messages
+// ============================================================
+
+export interface SendImageMessageArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  mediaId: string
+  caption?: string
+  contextMessageId?: string
+}
+
+export async function sendImageMessage(
+  args: SendImageMessageArgs
+): Promise<MetaSendResult> {
+  const { phoneNumberId, accessToken, to, mediaId, caption, contextMessageId } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'image',
+    image: { id: mediaId, caption },
+  }
+  if (!caption) delete (body.image as Record<string, unknown>).caption
+  if (contextMessageId) {
+    body.context = { message_id: contextMessageId }
+  }
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = await response.json()
+  return { messageId: data.messages[0].id }
+}
+
+// ============================================================
+// Document messages
+// ============================================================
+
+export interface SendDocumentMessageArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  mediaId: string
+  caption?: string
+  filename?: string
+  contextMessageId?: string
+}
+
+export async function sendDocumentMessage(
+  args: SendDocumentMessageArgs
+): Promise<MetaSendResult> {
+  const { phoneNumberId, accessToken, to, mediaId, caption, filename, contextMessageId } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'document',
+    document: { id: mediaId, caption, filename },
+  }
+  if (!caption) delete (body.document as Record<string, unknown>).caption
+  if (!filename) delete (body.document as Record<string, unknown>).filename
+  if (contextMessageId) {
+    body.context = { message_id: contextMessageId }
+  }
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = await response.json()
+  return { messageId: data.messages[0].id }
+}
+
 export interface DownloadMediaArgs {
   downloadUrl: string
   accessToken: string
