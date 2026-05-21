@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
 import {
@@ -41,6 +41,64 @@ function StatusIcon({ status }: { status: Message["status"] }) {
     default:
       return null;
   }
+}
+
+function AudioPlayer({ url }: { url: string | null | undefined }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setError(null);
+    const el = audioRef.current;
+    if (!el || !url) return;
+
+    const handleError = () => {
+      const mediaError = el.error;
+      if (mediaError) {
+        switch (mediaError.code) {
+          case MediaError.MEDIA_ERR_ABORTED:
+            setError('Playback was aborted');
+            break;
+          case MediaError.MEDIA_ERR_NETWORK:
+            setError('Network error loading audio');
+            break;
+          case MediaError.MEDIA_ERR_DECODE:
+            setError('Audio format not supported by this browser');
+            break;
+          case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+            setError('Audio format not supported');
+            break;
+          default:
+            setError('Playback failed');
+        }
+      }
+    };
+
+    el.addEventListener('error', handleError);
+    return () => el.removeEventListener('error', handleError);
+  }, [url]);
+
+  if (!url) return <MediaUnavailable label="Audio" />;
+
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 rounded-lg bg-slate-700/40 px-3 py-2 text-xs text-slate-300">
+        <ImageOff className="h-4 w-4 shrink-0 text-slate-500" />
+        <span>{error}</span>
+      </div>
+    );
+  }
+
+  return (
+    <audio
+      ref={audioRef}
+      src={url}
+      controls
+      preload="metadata"
+      playsInline
+      className="max-w-60"
+    />
+  );
 }
 
 function MediaUnavailable({ label }: { label: string }) {
@@ -162,13 +220,7 @@ function MessageContent({ message }: { message: Message }) {
 
     case "audio":
       return (
-        <div>
-          {message.media_url ? (
-            <audio src={message.media_url} controls className="max-w-60" />
-          ) : (
-            <MediaUnavailable label="Audio" />
-          )}
-        </div>
+        <AudioPlayer url={message.media_url} />
       );
 
     case "document":
