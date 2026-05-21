@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, KeyboardEvent } from "react";
-import { Send, LayoutTemplate, Mic, Square } from "lucide-react";
+import { Send, LayoutTemplate, Mic, Square, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -43,6 +43,7 @@ export function MessageComposer({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const adjustHeight = useCallback(() => {
     const el = textareaRef.current;
@@ -117,14 +118,28 @@ export function MessageComposer({
       mediaRecorder.start();
       setRecording(true);
     } catch (err) {
+      const isHttp = window.location.protocol !== 'https:' && window.location.hostname !== 'localhost';
       const msg =
         err instanceof DOMException && err.name === 'NotAllowedError'
-          ? 'Microphone access denied. Allow microphone permissions in your browser settings.'
+          ? isHttp
+            ? 'Microphone requires HTTPS. Use https:// or localhost, or upload an audio file instead.'
+            : 'Microphone access denied. Check your browser site settings and allow microphone.'
           : err instanceof DOMException && err.name === 'NotFoundError'
-            ? 'No microphone found. Connect a microphone and try again.'
+            ? 'No microphone found. Connect a microphone or upload an audio file.'
             : 'Failed to access microphone';
       toast.error(msg);
     }
+  }, [onSend, replyTo?.id]);
+
+  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 16 * 1024 * 1024) {
+      toast.error('Audio file too large (max 16MB)');
+      return;
+    }
+    onSend({ audioBlob: file, replyToId: replyTo?.id });
+    if (fileInputRef.current) fileInputRef.current.value = '';
   }, [onSend, replyTo?.id]);
 
   const stopRecording = useCallback(() => {
@@ -169,6 +184,14 @@ export function MessageComposer({
         </div>
       )}
 
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="audio/*"
+        className="hidden"
+        onChange={handleFileUpload}
+      />
+
       <div className="flex items-end gap-2">
         <Button
           variant="ghost"
@@ -178,6 +201,17 @@ export function MessageComposer({
           title="Send template"
         >
           <LayoutTemplate className="h-4 w-4" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-9 w-9 shrink-0 p-0 text-slate-400 hover:text-white"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={sessionExpired || sending}
+          title="Upload audio file"
+        >
+          <Upload className="h-4 w-4" />
         </Button>
 
         <textarea
