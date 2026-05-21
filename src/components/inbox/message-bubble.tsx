@@ -351,6 +351,11 @@ export function MessageBubble({
         isAgent ? "items-end" : "items-start",
       )}
     >
+      {!isAgent && message.sender_name && (
+        <span className="mb-0.5 px-1 text-[10px] font-medium text-slate-500">
+          {message.sender_name}
+        </span>
+      )}
       <div
         className={cn(
           "relative rounded-2xl px-3 py-2",

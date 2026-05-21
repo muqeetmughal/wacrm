@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus } from "@/types";
-import { Search, ChevronDown } from "lucide-react";
+import { Search, ChevronDown, Users } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Input } from "@/components/ui/input";
 import {
@@ -214,8 +214,11 @@ function ConversationItem({
   isActive,
   onSelect,
 }: ConversationItemProps) {
+  const isGroup = !!conversation.group_id;
   const contact = conversation.contact;
-  const displayName = contact?.name || contact?.phone || "Unknown";
+  const displayName = isGroup
+    ? conversation.group_subject || "Group"
+    : contact?.name || contact?.phone || "Unknown";
   const initials = displayName.charAt(0).toUpperCase();
 
   const handleClick = useCallback(() => {
@@ -238,7 +241,9 @@ function ConversationItem({
     >
       {/* Avatar */}
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-700 text-sm font-medium text-white">
-        {contact?.avatar_url ? (
+        {isGroup ? (
+          <Users className="h-4 w-4 text-slate-400" />
+        ) : contact?.avatar_url ? (
           <img
             src={contact.avatar_url}
             alt={displayName}

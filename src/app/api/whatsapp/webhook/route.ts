@@ -62,6 +62,19 @@ interface WhatsAppWebhookEntry {
         timestamp: string
         recipient_id: string
       }>
+      /** Present when the message was sent to a WhatsApp group. */
+      group_id?: string
+      group_subject?: string
+      /** Group participant changes (join/leave). */
+      group_participants_update?: {
+        added_numbers?: string[]
+        removed_numbers?: string[]
+      }
+      /** Group settings changes (subject, description). */
+      group_settings_update?: {
+        subject?: string
+        description?: string
+      }
     }
     field: string
   }>
@@ -193,6 +206,12 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
         }
       }
 
+      // Handle group lifecycle events (no messages)
+      if (!value.messages && value.group_id && !value.contacts) {
+        await handleGroupLifecycleEvent(value)
+        continue
+      }
+
       // Handle incoming messages
       if (!value.messages || !value.contacts) continue
 
@@ -212,6 +231,24 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
 
       const decryptedAccessToken = decrypt(config.access_token)
 
+      const isGroup = !!value.group_id
+      const groupId = value.group_id || null
+      const groupSubject = value.group_subject || null
+
+      // Sync group to waba_groups table if it's a group message
+      if (isGroup && groupId) {
+        await supabaseAdmin()
+          .from('waba_groups')
+          .upsert({
+            user_id: config.user_id,
+            waba_group_id: groupId,
+            subject: groupSubject || 'Group',
+          }, {
+            onConflict: 'user_id, waba_group_id',
+            ignoreDuplicates: false,
+          })
+      }
+
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
         const contact = value.contacts[i] || value.contacts[0]
@@ -220,9 +257,107 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           message,
           contact,
           config.user_id,
-          decryptedAccessToken
+          decryptedAccessToken,
+          isGroup,
+          groupId,
+          groupSubject
         )
+
+        // Sync group member from the contact
+        if (isGroup) {
+          await supabaseAdmin()
+            .from('group_members')
+            .upsert({
+              waba_group_id: groupId,
+              user_id: config.user_id,
+              phone: contact.wa_id,
+              name: contact.profile.name,
+            }, {
+              onConflict: 'user_id, waba_group_id, phone',
+              ignoreDuplicates: false,
+            })
+        }
       }
+
+      // Handle group participant updates (join/leave) when present
+      if (isGroup && value.group_participants_update) {
+        await handleGroupParticipantsUpdate(value, config.user_id)
+      }
+    }
+  }
+}
+
+/**
+ * Handle a group lifecycle event (creation, deletion) that comes
+ * without messages or contacts.
+ */
+async function handleGroupLifecycleEvent(value: WhatsAppWebhookEntry['changes'][0]['value']) {
+  // Find user by phone_number_id
+  const phoneNumberId = value.metadata.phone_number_id
+  const { data: config } = await supabaseAdmin()
+    .from('whatsapp_config')
+    .select('user_id')
+    .eq('phone_number_id', phoneNumberId)
+    .single()
+
+  if (!config) return
+
+  const groupId = value.group_id
+  if (!groupId) return
+
+  // Upsert the group — if it was deleted on WhatsApp, the user can
+  // manually remove it from the UI later.
+  await supabaseAdmin()
+    .from('waba_groups')
+    .upsert({
+      user_id: config.user_id,
+      waba_group_id: groupId,
+      subject: value.group_subject || 'Group',
+    }, {
+      onConflict: 'user_id, waba_group_id',
+    })
+}
+
+/**
+ * Handle group participant updates (members joining or leaving).
+ * Meta sends these with `group_participants_update` on the value.
+ */
+async function handleGroupParticipantsUpdate(
+  value: WhatsAppWebhookEntry['changes'][0]['value'],
+  userId: string
+) {
+  const groupId = value.group_id
+  if (!groupId) return
+
+  const update = value.group_participants_update
+  if (!update) return
+
+  // Remove members who left
+  if (update.removed_numbers) {
+    for (const phone of update.removed_numbers) {
+      await supabaseAdmin()
+        .from('group_members')
+        .delete()
+        .eq('waba_group_id', groupId)
+        .eq('user_id', userId)
+        .eq('phone', phone)
+    }
+  }
+
+  // Add new members who joined
+  if (update.added_numbers) {
+    for (const phone of update.added_numbers) {
+      // We don't have the name from this event, so just store the phone
+      // The name will be filled in when they send a message
+      await supabaseAdmin()
+        .from('group_members')
+        .upsert({
+          waba_group_id: groupId,
+          user_id: userId,
+          phone,
+        }, {
+          onConflict: 'user_id, waba_group_id, phone',
+        })
     }
   }
 }
@@ -444,32 +579,51 @@ async function processMessage(
   message: WhatsAppMessage,
   contact: { profile: { name: string }; wa_id: string },
   userId: string,
-  accessToken: string
+  accessToken: string,
+  isGroup = false,
+  groupId: string | null = null,
+  groupSubject: string | null = null
 ) {
   const senderPhone = normalizePhone(message.from)
   const contactName = contact.profile.name
 
-  // Find or create contact
-  const contactOutcome = await findOrCreateContact(
-    userId,
-    senderPhone,
-    contactName
-  )
-  if (!contactOutcome) return
-  const contactRecord = contactOutcome.contact
+  // Find or create conversation first (group vs 1:1)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let conversation: any
 
-  // Find or create conversation
-  const conversation = await findOrCreateConversation(
-    userId,
-    contactRecord.id
-  )
+  if (isGroup && groupId) {
+    conversation = await findOrCreateGroupConversation(
+      userId,
+      groupId,
+      groupSubject
+    )
+  } else {
+    const contactOutcome = await findOrCreateContact(
+      userId,
+      senderPhone,
+      contactName
+    )
+    if (!contactOutcome) return
+    conversation = await findOrCreateConversation(
+      userId,
+      contactOutcome.contact.id
+    )
+  }
   if (!conversation) return
+
+  // For groups, also find/create the individual contact (for the reactions lookup)
+  const contactOutcome = isGroup
+    ? await findOrCreateContact(userId, senderPhone, contactName)
+    : null
+  const contactRecord = contactOutcome?.contact ?? null
 
   // Reactions short-circuit here — they aren't messages. We never insert
   // into `messages`, never bump unread_count, never update last_message_text.
   // Done before parseMessageContent so the media-URL fetch is skipped.
   if (message.type === 'reaction') {
-    await handleReaction(message, conversation.id, contactRecord.id)
+    if (contactRecord) {
+      await handleReaction(message, conversation.id, contactRecord.id)
+    }
     return
   }
 
@@ -495,15 +649,6 @@ async function processMessage(
     }
   }
 
-  // Insert message — field names MUST match the messages table schema
-  // (see supabase/migrations/001_initial_schema.sql):
-  //   conversation_id, sender_type, content_type, content_text,
-  //   media_url, template_name, message_id, status, created_at
-  // `mediaType` is intentionally unused — the schema has no media_type
-  // column; the MIME type is only used to construct the proxy URL during
-  // parseMessageContent. Silence the unused-var warning:
-  void mediaType
-
   // The messages.content_type CHECK constraint only allows:
   //   text, image, document, audio, video, location, template
   // Map incoming WhatsApp types that aren't in that list to the closest
@@ -525,12 +670,17 @@ async function processMessage(
   // BEFORE we insert, so the count is accurate. Covers the case where
   // the contact row already exists (manual add / CSV import) but they've
   // never messaged us before — which new_contact_created wouldn't catch.
-  const { count: priorCustomerMsgCount } = await supabaseAdmin()
-    .from('messages')
-    .select('id', { count: 'exact', head: true })
-    .eq('conversation_id', conversation.id)
-    .eq('sender_type', 'customer')
-  const isFirstInboundMessage = (priorCustomerMsgCount ?? 0) === 0
+  // For group conversations we skip this check (group messages are always
+  // from someone who could have messaged individually too).
+  let isFirstInboundMessage = false
+  if (!isGroup) {
+    const { count: priorCustomerMsgCount } = await supabaseAdmin()
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('conversation_id', conversation.id)
+      .eq('sender_type', 'customer')
+    isFirstInboundMessage = (priorCustomerMsgCount ?? 0) === 0
+  }
 
   const { error: msgError } = await supabaseAdmin().from('messages').insert({
     conversation_id: conversation.id,
@@ -542,6 +692,7 @@ async function processMessage(
     status: 'delivered',
     created_at: new Date(parseInt(message.timestamp) * 1000).toISOString(),
     reply_to_message_id: replyToInternalId,
+    sender_name: isGroup ? contactName : null,
   })
 
   if (msgError) {
@@ -567,7 +718,9 @@ async function processMessage(
   // If this contact was a recent broadcast recipient, flag the reply
   // so the broadcast's `replied_count` advances (via the aggregate
   // trigger installed in migration 003).
-  await flagBroadcastReplyIfAny(userId, contactRecord.id)
+  if (contactRecord) {
+    await flagBroadcastReplyIfAny(userId, contactRecord.id)
+  }
 
   // Fire any automations that react to this webhook event. All dispatches
   // run here (not earlier) so the contact, conversation, and inbound
@@ -587,18 +740,22 @@ async function processMessage(
   // manually-imported contacts sending for the first time. We dispatch both
   // so users can pick whichever semantic they want; an automation that
   // listens to only one trigger runs only when that trigger matches.
-  if (contactOutcome.wasCreated) automationTriggers.unshift('new_contact_created')
-  if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
-  for (const triggerType of automationTriggers) {
-    runAutomationsForTrigger({
-      userId,
-      triggerType,
-      contactId: contactRecord.id,
-      context: {
-        message_text: inboundText,
-        conversation_id: conversation.id,
-      },
-    }).catch((err) => console.error('[automations] dispatch failed:', err))
+  // Automations require a contact record — skip for group messages
+  // where the sender isn't in our contacts.
+  if (contactRecord) {
+    if (contactOutcome?.wasCreated) automationTriggers.unshift('new_contact_created')
+    if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
+    for (const triggerType of automationTriggers) {
+      runAutomationsForTrigger({
+        userId,
+        triggerType,
+        contactId: contactRecord.id,
+        context: {
+          message_text: inboundText,
+          conversation_id: conversation.id,
+        },
+      }).catch((err) => console.error('[automations] dispatch failed:', err))
+    }
   }
 }
 
@@ -628,6 +785,8 @@ async function parseMessageContent(
       return null
     }
   }
+
+  console.log("message.type", message.type)
 
   switch (message.type) {
     case 'text':
@@ -836,6 +995,56 @@ async function findOrCreateConversation(userId: string, contactId: string) {
 
   if (createError) {
     console.error('Error creating conversation:', createError)
+    return null
+  }
+
+  return newConv
+}
+
+async function findOrCreateGroupConversation(
+  userId: string,
+  groupId: string,
+  groupSubject: string | null
+) {
+  const { data: existing } = await supabaseAdmin()
+    .from('conversations')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('group_id', groupId)
+    .maybeSingle()
+
+  if (existing) {
+    if (groupSubject && groupSubject !== existing.group_subject) {
+      await supabaseAdmin()
+        .from('conversations')
+        .update({ group_subject: groupSubject })
+        .eq('id', existing.id)
+    }
+    return existing
+  }
+
+  const { data: newConv, error: createError } = await supabaseAdmin()
+    .from('conversations')
+    .insert({
+      user_id: userId,
+      group_id: groupId,
+      group_subject: groupSubject,
+    })
+    .select()
+    .maybeSingle()
+
+  if (createError?.code === '23505') {
+    const { data: existing } = await supabaseAdmin()
+      .from('conversations')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('group_id', groupId)
+      .maybeSingle()
+    return existing
+  }
+
+  if (createError) {
+    console.error('Error creating group conversation:', createError)
     return null
   }
 
