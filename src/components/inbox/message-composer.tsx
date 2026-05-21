@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, KeyboardEvent } from "react";
 import { Send, LayoutTemplate, Mic, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 import { ReplyQuote } from "./reply-quote";
 
 interface ReplyDraft {
@@ -85,9 +86,16 @@ export function MessageComposer({
   );
 
   const startRecording = useCallback(async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error('Voice recording not supported in this browser');
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm';
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
@@ -97,7 +105,7 @@ export function MessageComposer({
 
       mediaRecorder.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
         if (blob.size > 0) {
           onSend({ audioBlob: blob, replyToId: replyTo?.id });
         }
@@ -105,8 +113,14 @@ export function MessageComposer({
 
       mediaRecorder.start();
       setRecording(true);
-    } catch {
-      console.error('Microphone access denied');
+    } catch (err) {
+      const msg =
+        err instanceof DOMException && err.name === 'NotAllowedError'
+          ? 'Microphone access denied. Allow microphone permissions in your browser settings.'
+          : err instanceof DOMException && err.name === 'NotFoundError'
+            ? 'No microphone found. Connect a microphone and try again.'
+            : 'Failed to access microphone';
+      toast.error(msg);
     }
   }, [onSend, replyTo?.id]);
 
