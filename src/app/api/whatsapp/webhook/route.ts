@@ -771,27 +771,30 @@ async function findOrCreateContact(
 }
 
 async function findOrCreateConversation(userId: string, contactId: string) {
-  // Look for existing conversation
-  const { data: existing, error: findError } = await supabaseAdmin()
+  const { data: existing } = await supabaseAdmin()
     .from('conversations')
     .select('*')
     .eq('user_id', userId)
     .eq('contact_id', contactId)
-    .single()
+    .maybeSingle()
 
-  if (!findError && existing) {
-    return existing
-  }
+  if (existing) return existing
 
-  // Create new conversation
   const { data: newConv, error: createError } = await supabaseAdmin()
     .from('conversations')
-    .insert({
-      user_id: userId,
-      contact_id: contactId,
-    })
+    .insert({ user_id: userId, contact_id: contactId })
     .select()
-    .single()
+    .maybeSingle()
+
+  if (createError?.code === '23505') {
+    const { data: existing } = await supabaseAdmin()
+      .from('conversations')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('contact_id', contactId)
+      .maybeSingle()
+    return existing
+  }
 
   if (createError) {
     console.error('Error creating conversation:', createError)
