@@ -32,6 +32,12 @@ interface WhatsAppMessage {
   sticker?: { id: string; mime_type: string }
   location?: { latitude: number; longitude: number; name?: string; address?: string }
   reaction?: { message_id: string; emoji: string }
+  button?: { payload: string; text: string }
+  interactive?: {
+    type: 'button_reply' | 'list_reply'
+    button_reply?: { id: string; title: string }
+    list_reply?: { id: string; title: string; description?: string }
+  }
   /** Present when the customer swipe-replies to one of our messages. */
   context?: { id: string }
 }
@@ -502,14 +508,19 @@ async function processMessage(
   //   text, image, document, audio, video, location, template
   // Map incoming WhatsApp types that aren't in that list to the closest
   // allowed value so the INSERT doesn't fail with a constraint error.
+  // Incoming button / interactive replies carry text-like content but aren't
+  // in the DB CHECK constraint. Map them to 'text' so the INSERT succeeds.
+  const MAP_TO_TEXT = new Set(['button', 'interactive', 'reaction'])
   const ALLOWED_CONTENT_TYPES = new Set([
     'text', 'image', 'document', 'audio', 'video', 'location', 'template',
   ])
   const contentType = ALLOWED_CONTENT_TYPES.has(message.type)
     ? message.type
     : message.type === 'sticker'
-      ? 'image'   // stickers are images
-      : 'text'    // reaction, unknown → text fallback
+      ? 'image'
+      : MAP_TO_TEXT.has(message.type)
+        ? 'text'
+        : 'text'
 
   // Determine whether this is the contact's very first inbound message
   // BEFORE we insert, so the count is accurate. Covers the case where
@@ -698,6 +709,34 @@ async function parseMessageContent(
     case 'reaction':
       return {
         contentText: message.reaction?.emoji || null,
+        mediaUrl: null,
+        mediaType: null,
+      }
+
+    case 'button':
+      return {
+        contentText: `🟢 ${message.button?.text || 'Button reply'}`,
+        mediaUrl: null,
+        mediaType: null,
+      }
+
+    case 'interactive':
+      if (message.interactive?.button_reply) {
+        return {
+          contentText: `🟢 ${message.interactive.button_reply.title}`,
+          mediaUrl: null,
+          mediaType: null,
+        }
+      }
+      if (message.interactive?.list_reply) {
+        return {
+          contentText: `📋 ${message.interactive.list_reply.title}`,
+          mediaUrl: null,
+          mediaType: null,
+        }
+      }
+      return {
+        contentText: '[Interactive reply]',
         mediaUrl: null,
         mediaType: null,
       }
