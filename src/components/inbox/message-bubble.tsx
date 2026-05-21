@@ -43,6 +43,40 @@ function StatusIcon({ status }: { status: Message["status"] }) {
   }
 }
 
+function LocationContent({ text }: { text?: string | null }) {
+  const coords = text?.match(/(-?\d+\.?\d*),(-?\d+\.?\d*)$/);
+  const lat = coords ? coords[1] : null;
+  const lng = coords ? coords[2] : null;
+  const label = lat ? text?.replace(/ - -?\d+\.?\d*,-?\d+\.?\d*$/, '') : text;
+  const mapsUrl = lat
+    ? `https://www.google.com/maps?q=${lat},${lng}`
+    : null;
+
+  return (
+    <a
+      href={mapsUrl ?? '#'}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block overflow-hidden rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700/80"
+    >
+      {lat && (
+        <img
+          src={`https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lng}&zoom=15&size=240x120&maptype=mapnik&markers=${lat},${lng},red-pushpin`}
+          alt="Map"
+          className="h-30 w-full object-cover"
+          loading="lazy"
+        />
+      )}
+      <div className="flex items-center gap-2 px-3 py-2 text-sm">
+        <MapPin className="h-4 w-4 shrink-0 text-violet-400" />
+        <span className="truncate text-slate-200">
+          {label || "Location shared"}
+        </span>
+      </div>
+    </a>
+  );
+}
+
 function AudioPlayer({ url }: { url: string | null | undefined }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -257,12 +291,7 @@ function MessageContent({ message }: { message: Message }) {
       );
 
     case "location":
-      return (
-        <div className="flex items-center gap-2 text-sm">
-          <MapPin className="h-4 w-4 shrink-0 text-slate-400" />
-          <span>{message.content_text || "Location shared"}</span>
-        </div>
-      );
+      return <LocationContent text={message.content_text} />;
 
     default:
       return (
